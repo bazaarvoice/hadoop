@@ -71,7 +71,8 @@ RUN apt-get -q update && apt-get -q install -y \
     software-properties-common \
     snappy \
     sudo \
-    zlib1g-dev
+    zlib1g-dev \
+    openssh-server
 
 #######
 # OpenJDK 8
