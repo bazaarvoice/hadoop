@@ -205,4 +205,4 @@ RUN echo '~/hadoop_env_checks.sh' >> /root/.bashrc
 # Install things to support building in Jenkins
 ####
 
-RUN apt-get install -y openssh-client
+RUN apt-get install -y openssh-client rpm
