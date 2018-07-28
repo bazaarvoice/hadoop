@@ -250,6 +250,15 @@ public class Component implements Serializable {
     return null;
   }
 
+  public Container getComponentInstance(String compInstanceName) {
+    for (Container container : containers) {
+      if (compInstanceName.equals(container.getComponentInstanceName())) {
+        return container;
+      }
+    }
+    return null;
+  }
+
   /**
    * Run all containers of this component in privileged mode (YARN-4262).
    **/
@@ -269,16 +278,15 @@ public class Component implements Serializable {
 
   /**
    * Advanced scheduling and placement policies for all containers of this
-   * component (optional). If not specified, the service level placement_policy
-   * takes effect. Refer to the description at the global level for more
-   * details.
+   * component.
    **/
   public Component placementPolicy(PlacementPolicy placementPolicy) {
     this.placementPolicy = placementPolicy;
     return this;
   }
 
-  @ApiModelProperty(example = "null", value = "Advanced scheduling and placement policies for all containers of this component (optional). If not specified, the service level placement_policy takes effect. Refer to the description at the global level for more details.")
+  @ApiModelProperty(example = "null", value = "Advanced scheduling and "
+      + "placement policies for all containers of this component.")
   public PlacementPolicy getPlacementPolicy() {
     return placementPolicy;
   }
@@ -441,5 +449,17 @@ public class Component implements Serializable {
     if (this.getReadinessCheck() == null) {
       this.setReadinessCheck(that.getReadinessCheck());
     }
+  }
+
+  public void overwrite(Component that) {
+    setArtifact(that.getArtifact());
+    setResource(that.resource);
+    setNumberOfContainers(that.getNumberOfContainers());
+    setLaunchCommand(that.getLaunchCommand());
+    setConfiguration(that.configuration);
+    setRunPrivilegedContainer(that.getRunPrivilegedContainer());
+    setDependencies(that.getDependencies());
+    setPlacementPolicy(that.getPlacementPolicy());
+    setReadinessCheck(that.getReadinessCheck());
   }
 }

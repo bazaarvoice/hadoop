@@ -30,6 +30,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Array;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -1386,7 +1387,8 @@ public class RouterRpcServer extends AbstractService
         action, isChecked);
     Set<FederationNamespaceInfo> nss = namenodeResolver.getNamespaces();
     Map<FederationNamespaceInfo, Boolean> results =
-        rpcClient.invokeConcurrent(nss, method, true, true, Boolean.class);
+        rpcClient.invokeConcurrent(
+            nss, method, true, !isChecked, Boolean.class);
 
     // We only report true if all the name space are in safe mode
     int numSafemode = 0;
@@ -2269,7 +2271,15 @@ public class RouterRpcServer extends AbstractService
         }
       }
 
-      return location.getDestinations();
+      // Filter disabled subclusters
+      Set<String> disabled = namenodeResolver.getDisabledNamespaces();
+      List<RemoteLocation> locs = new ArrayList<>();
+      for (RemoteLocation loc : location.getDestinations()) {
+        if (!disabled.contains(loc.getNameserviceId())) {
+          locs.add(loc);
+        }
+      }
+      return locs;
     } catch (IOException ioe) {
       if (this.rpcMonitor != null) {
         this.rpcMonitor.routerFailureStateStore();
@@ -2293,7 +2303,7 @@ public class RouterRpcServer extends AbstractService
           return entry.isAll();
         }
       } catch (IOException e) {
-        LOG.error("Cannot get mount point: {}", e.getMessage());
+        LOG.error("Cannot get mount point", e);
       }
     }
     return false;
@@ -2314,7 +2324,7 @@ public class RouterRpcServer extends AbstractService
           return true;
         }
       } catch (IOException e) {
-        LOG.error("Cannot get mount point: {}", e.getMessage());
+        LOG.error("Cannot get mount point", e);
       }
     }
     return false;
@@ -2328,8 +2338,62 @@ public class RouterRpcServer extends AbstractService
    */
   private Map<String, Long> getMountPointDates(String path) {
     Map<String, Long> ret = new TreeMap<>();
-    // TODO add when we have a Mount Table
+    if (subclusterResolver instanceof MountTableResolver) {
+      try {
+        final List<String> children = subclusterResolver.getMountPoints(path);
+        for (String child : children) {
+          Long modTime = getModifiedTime(ret, path, child);
+          ret.put(child, modTime);
+        }
+      } catch (IOException e) {
+        LOG.error("Cannot get mount point", e);
+      }
+    }
     return ret;
+  }
+
+  /**
+   * Get modified time for child. If the child is present in mount table it
+   * will return the modified time. If the child is not present but subdirs of
+   * this child are present then it will return latest modified subdir's time
+   * as modified time of the requested child.
+   * @param ret contains children and modified times.
+   * @param mountTable.
+   * @param path Name of the path to start checking dates from.
+   * @param child child of the requested path.
+   * @return modified time.
+   */
+  private long getModifiedTime(Map<String, Long> ret, String path,
+      String child) {
+    MountTableResolver mountTable = (MountTableResolver)subclusterResolver;
+    String srcPath;
+    if (path.equals(Path.SEPARATOR)) {
+      srcPath = Path.SEPARATOR + child;
+    } else {
+      srcPath = path + Path.SEPARATOR + child;
+    }
+    Long modTime = 0L;
+    try {
+      // Get mount table entry for the srcPath
+      MountTable entry = mountTable.getMountPoint(srcPath);
+      // if srcPath is not in mount table but its subdirs are in mount
+      // table we will display latest modified subdir date/time.
+      if (entry == null) {
+        List<MountTable> entries = mountTable.getMounts(srcPath);
+        for (MountTable eachEntry : entries) {
+          // Get the latest date
+          if (ret.get(child) == null ||
+              ret.get(child) < eachEntry.getDateModified()) {
+            modTime = eachEntry.getDateModified();
+          }
+        }
+      } else {
+        modTime = entry.getDateModified();
+      }
+    } catch (IOException e) {
+      LOG.error("Cannot get mount point", e);
+    }
+    return modTime;
   }
 
   /**

@@ -55,8 +55,7 @@ import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
-import com.google.common.base.Joiner;
-import org.apache.commons.codec.binary.Base64;
+
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -140,7 +139,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.MutableConfigurat
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.activities.ActivitiesManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.YarnScheduler;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.activities.ActivitiesManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
@@ -175,6 +173,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntr
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntryList;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodesInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.RMQueueAclInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDefinitionInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteRequestInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteResponseInfo;
@@ -229,6 +228,7 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
 
   @VisibleForTesting
   boolean isCentralizedNodeLabelConfiguration = true;
+  private boolean displayPerUserApps = false;
 
   public final static String DELEGATION_TOKEN_HEADER =
       "Hadoop-YARN-RM-Delegation-Token";
@@ -241,6 +241,9 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
     this.conf = conf;
     isCentralizedNodeLabelConfiguration =
         YarnConfiguration.isCentralizedNodeLabelConfiguration(conf);
+    this.displayPerUserApps  = conf.getBoolean(
+        YarnConfiguration.DISPLAY_APPS_FOR_LOGGED_IN_USER,
+        YarnConfiguration.DEFAULT_DISPLAY_APPS_FOR_LOGGED_IN_USER);
   }
 
   RMWebServices(ResourceManager rm, Configuration conf,
@@ -609,7 +612,14 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
       DeSelectFields deSelectFields = new DeSelectFields();
       deSelectFields.initFields(unselectedFields);
 
-      AppInfo app = new AppInfo(rm, rmapp, hasAccess(rmapp, hsr),
+      boolean allowAccess = hasAccess(rmapp, hsr);
+      // Given RM is configured to display apps per user, skip apps to which
+      // this caller doesn't have access to view.
+      if (displayPerUserApps && !allowAccess) {
+        continue;
+      }
+
+      AppInfo app = new AppInfo(rm, rmapp, allowAccess,
           WebAppUtils.getHttpSchemePrefix(conf), deSelectFields);
       allApps.add(app);
     }
@@ -2519,5 +2529,53 @@ public class RMWebServices extends WebServices implements RMWebServiceProtocol {
               "MutableConfScheduler.")
           .build();
     }
+  }
+
+  @GET
+  @Path(RMWSConsts.CHECK_USER_ACCESS_TO_QUEUE)
+  @Produces({ MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8,
+                MediaType.APPLICATION_XML + "; " + JettyUtils.UTF_8 })
+  public RMQueueAclInfo checkUserAccessToQueue(
+      @PathParam(RMWSConsts.QUEUE) String queue,
+      @QueryParam(RMWSConsts.USER) String username,
+      @QueryParam(RMWSConsts.QUEUE_ACL_TYPE)
+        @DefaultValue("SUBMIT_APPLICATIONS") String queueAclType,
+      @Context HttpServletRequest hsr) throws AuthorizationException {
+    init();
+
+    // For the user who invokes this REST call, he/she should have admin access
+    // to the queue. Otherwise we will reject the call.
+    UserGroupInformation callerUGI = getCallerUserGroupInformation(hsr, true);
+    if (callerUGI != null && !this.rm.getResourceScheduler().checkAccess(
+        callerUGI, QueueACL.ADMINISTER_QUEUE, queue)) {
+      throw new ForbiddenException(
+          "User=" + callerUGI.getUserName() + " doesn't haven access to queue="
+              + queue + " so it cannot check ACLs for other users.");
+    }
+
+    // Create UGI for the to-be-checked user.
+    UserGroupInformation user = UserGroupInformation.createRemoteUser(username);
+    if (user == null) {
+      throw new ForbiddenException(
+          "Failed to retrieve UserGroupInformation for user=" + username);
+    }
+
+    // Check if the specified queue acl is valid.
+    QueueACL queueACL;
+    try {
+      queueACL = QueueACL.valueOf(queueAclType);
+    } catch (IllegalArgumentException e) {
+      throw new BadRequestException("Specified queueAclType=" + queueAclType
+          + " is not a valid type, valid queue acl types={"
+          + "SUBMIT_APPLICATIONS/ADMINISTER_QUEUE}");
+    }
+
+    if (!this.rm.getResourceScheduler().checkAccess(user, queueACL, queue)) {
+      return new RMQueueAclInfo(false, user.getUserName(),
+          "User=" + username + " doesn't have access to queue=" + queue
+              + " with acl-type=" + queueAclType);
+    }
+
+    return new RMQueueAclInfo(true, user.getUserName(), "");
   }
 }

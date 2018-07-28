@@ -197,6 +197,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       HOSTNAME_PATTERN);
   private static final Pattern USER_MOUNT_PATTERN = Pattern.compile(
       "(?<=^|,)([^:\\x00]+):([^:\\x00]+):([a-z]+)");
+  private static final int HOST_NAME_LENGTH = 64;
 
   @InterfaceAudience.Private
   public static final String ENV_DOCKER_CONTAINER_IMAGE =
@@ -376,7 +377,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       Container container) throws ContainerExecutionException {
     try {
       String commandFile = dockerClient.writeCommandToTempFile(
-          dockerVolumeCommand, container.getContainerId().toString());
+          dockerVolumeCommand, container, nmContext);
       PrivilegedOperation privOp = new PrivilegedOperation(
           PrivilegedOperation.OperationType.RUN_DOCKER_CMD);
       privOp.appendArgs(commandFile);
@@ -533,6 +534,11 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       if (!hostnamePattern.matcher(hostname).matches()) {
         throw new ContainerExecutionException("Hostname '" + hostname
             + "' doesn't match docker hostname pattern");
+      }
+      if (hostname.length() > HOST_NAME_LENGTH) {
+        throw new ContainerExecutionException(
+            "Hostname can not be greater than " + HOST_NAME_LENGTH
+                + " characters: " + hostname);
       }
     }
   }
@@ -760,7 +766,11 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
           throw new ContainerExecutionException(message);
         }
       }
-      dockerRunAsUser = uid + ":" + gid;
+      if (!allowPrivilegedContainerExecution(container)) {
+        dockerRunAsUser = uid + ":" + gid;
+      } else {
+        dockerRunAsUser = ctx.getExecutionAttribute(USER);
+      }
     }
 
     //List<String> -> stored as List -> fetched/converted to List<String>
@@ -872,7 +882,9 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     }
 
     if(enableUserReMapping) {
-      runCommand.groupAdd(groups);
+      if (!allowPrivilegedContainerExecution(container)) {
+        runCommand.groupAdd(groups);
+      }
     }
 
     // use plugins to update docker run command.
@@ -889,7 +901,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     }
 
     String commandFile = dockerClient.writeCommandToTempFile(runCommand,
-        containerIdStr);
+        container, nmContext);
     PrivilegedOperation launchOp = buildLaunchOp(ctx,
         commandFile, runCommand);
 
@@ -994,7 +1006,7 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
         new DockerInspectCommand(containerId).getIpAndHost();
     try {
       String commandFile = dockerClient.writeCommandToTempFile(inspectCommand,
-          containerId);
+          container, nmContext);
       PrivilegedOperation privOp = new PrivilegedOperation(
           PrivilegedOperation.OperationType.RUN_DOCKER_CMD);
       privOp.appendArgs(commandFile);
@@ -1136,11 +1148,11 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       throws ContainerExecutionException {
     DockerCommandExecutor.DockerContainerStatus containerStatus =
         DockerCommandExecutor.getContainerStatus(containerId, conf,
-            privilegedOperationExecutor);
+            privilegedOperationExecutor, nmContext);
     if (DockerCommandExecutor.isStoppable(containerStatus)) {
       DockerStopCommand dockerStopCommand = new DockerStopCommand(containerId);
       DockerCommandExecutor.executeDockerCommand(dockerStopCommand, containerId,
-          env, conf, privilegedOperationExecutor, false);
+          env, conf, privilegedOperationExecutor, false, nmContext);
     } else {
       if (LOG.isDebugEnabled()) {
         LOG.debug(
@@ -1154,12 +1166,12 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
       ContainerExecutor.Signal signal) throws ContainerExecutionException {
     DockerCommandExecutor.DockerContainerStatus containerStatus =
         DockerCommandExecutor.getContainerStatus(containerId, conf,
-            privilegedOperationExecutor);
+            privilegedOperationExecutor, nmContext);
     if (DockerCommandExecutor.isKillable(containerStatus)) {
       DockerKillCommand dockerKillCommand =
           new DockerKillCommand(containerId).setSignal(signal.name());
       DockerCommandExecutor.executeDockerCommand(dockerKillCommand, containerId,
-          env, conf, privilegedOperationExecutor, false);
+          env, conf, privilegedOperationExecutor, false, nmContext);
     } else {
       if (LOG.isDebugEnabled()) {
         LOG.debug(
@@ -1179,11 +1191,11 @@ public class DockerLinuxContainerRuntime implements LinuxContainerRuntime {
     } else {
       DockerCommandExecutor.DockerContainerStatus containerStatus =
           DockerCommandExecutor.getContainerStatus(containerId, conf,
-              privilegedOperationExecutor);
+              privilegedOperationExecutor, nmContext);
       if (DockerCommandExecutor.isRemovable(containerStatus)) {
         DockerRmCommand dockerRmCommand = new DockerRmCommand(containerId);
         DockerCommandExecutor.executeDockerCommand(dockerRmCommand, containerId,
-            env, conf, privilegedOperationExecutor, false);
+            env, conf, privilegedOperationExecutor, false, nmContext);
       }
     }
   }
